@@ -17,6 +17,8 @@
 #include <WebServer.h>
 #include <Preferences.h>
 #include <ESPmDNS.h>
+#include <sys/socket.h>
+#include <netinet/tcp.h>
 
 // ── Hardware-Pins ──────────────────────────────────────────────────
 #define RS232_RX_PIN   16
@@ -44,37 +46,36 @@ String currentPower  = "UNKNOWN";
 int    currentVol    = 40;   // AVR-Wert 0–80, wie auf Display
 String currentInput  = "23"; // hex, default CD
 
-// Nicht-blockierende Command-Queue für wiederholtes Senden
-String   pendingCmd      = "";
-int      pendingCmdCount = 0;
-unsigned long pendingCmdTime = 0;
-#define  CMD_REPEAT     3
-#define  CMD_INTERVAL   150
+unsigned long lastPollMs = 0;
+int           pollState  = 0;   // 0=PWR, 1=MVL, 2=SLI
 
-// ── Forward Declarations ───────────────────────────────────────────
-void queueCmd(const String& cmd);
 
 // ── eISCP Protokoll ────────────────────────────────────────────────
 // Header: "ISCP" | hdrSize(4B BE) | dataSize(4B BE) | version(1B) | 0x000000
-// Data  : "!1CMD...\x0d\x0a"
+// Data  : "!1CMD...\r\n\x1a"
+//
+// WICHTIG: buildEiscp() als String ist KAPUTT — buf[13]=0x00 terminiert
+// den String-Konstruktor vorzeitig → nur 13 Bytes werden gesendet.
+// Stattdessen: sendEiscpToClient() schreibt Header + Daten separat.
 
-String buildEiscp(const String& iscpMsg) {
-  uint32_t hdrSize  = 16;
-  uint32_t dataSize = iscpMsg.length();
-  uint8_t  buf[20 + iscpMsg.length()];
-  buf[0]  = 'I'; buf[1]  = 'S'; buf[2]  = 'C'; buf[3]  = 'P';
-  buf[4]  = (hdrSize  >> 24) & 0xFF;
-  buf[5]  = (hdrSize  >> 16) & 0xFF;
-  buf[6]  = (hdrSize  >>  8) & 0xFF;
-  buf[7]  =  hdrSize         & 0xFF;
-  buf[8]  = (dataSize >> 24) & 0xFF;
-  buf[9]  = (dataSize >> 16) & 0xFF;
-  buf[10] = (dataSize >>  8) & 0xFF;
-  buf[11] =  dataSize        & 0xFF;
-  buf[12] = 0x01;
-  buf[13] = 0x00; buf[14] = 0x00; buf[15] = 0x00;
-  for (uint32_t i = 0; i < dataSize; i++) buf[16 + i] = iscpMsg[i];
-  return String((char*)buf).substring(0, 16 + dataSize);
+void sendEiscpToClient(WiFiClient& client, const String& iscpMsg) {
+  // iscpMsg enthält bereits "\r" am Ende (z.B. "!1PWR01\r")
+  // eISCP-Standard-Terminator: \r\n\x1a — für maximale Binding-Kompatibilität
+  String msg = iscpMsg;
+  if (!msg.endsWith("\r")) msg += "\r";
+  msg += "\n\x1a";
+  uint32_t dataSize = msg.length();
+  uint8_t hdr[16];
+  hdr[0]  = 'I'; hdr[1]  = 'S'; hdr[2]  = 'C'; hdr[3]  = 'P';
+  hdr[4]  = 0;   hdr[5]  = 0;   hdr[6]  = 0;   hdr[7]  = 16;
+  hdr[8]  = (dataSize >> 24) & 0xFF;
+  hdr[9]  = (dataSize >> 16) & 0xFF;
+  hdr[10] = (dataSize >>  8) & 0xFF;
+  hdr[11] =  dataSize        & 0xFF;
+  hdr[12] = 0x01;
+  hdr[13] = 0x00; hdr[14] = 0x00; hdr[15] = 0x00;
+  client.write(hdr, 16);
+  client.write((const uint8_t*)msg.c_str(), dataSize);
 }
 
 // Gibt den ISCP-Teil eines eISCP-Pakets zurück ("!1CMD...\r")
@@ -85,7 +86,10 @@ String parseEiscp(const uint8_t* buf, int len) {
                       ((uint32_t)buf[10]<<8)| buf[11];
   if (len < 16 + (int)dataSize) return "";
   String iscp = "";
-  for (uint32_t i = 0; i < dataSize; i++) iscp += (char)buf[16 + i];
+  for (uint32_t i = 0; i < dataSize; i++) {
+    char c = (char)buf[16 + i];
+    if (c != '\r' && c != '\n' && c != '\x1a') iscp += c;
+  }
   return iscp;
 }
 
@@ -116,15 +120,18 @@ void readSerial2() {
         Serial.println("[RS232 ←] " + serial2Buf);
         updateState(serial2Buf);
         if (eiscpClient && eiscpClient.connected()) {
-          String pkt = buildEiscp(serial2Buf + "\r");
-          eiscpClient.write((const uint8_t*)pkt.c_str(), pkt.length());
+          sendEiscpToClient(eiscpClient, serial2Buf + "\r");
         }
       }
       serial2Buf = "";
     } else if (c >= 0x20 && c <= 0x7E) {
       serial2Buf += c;
       if (serial2Buf.length() > 32) {
-        serial2Buf = ""; // kein gültiges ISCP — Garbage verwerfen
+        // Statt komplett löschen: "!1"-Prefix suchen und behalten.
+        // Verhindert dass z.B. "!1PW" durch Overflow verloren geht und
+        // nur "R01" übrig bleibt (was dann nicht als "!1PWR01" erkannt wird).
+        int idx = serial2Buf.lastIndexOf("!1");
+        serial2Buf = (idx > 0) ? serial2Buf.substring(idx) : "";
       }
     }
   }
@@ -415,17 +422,19 @@ async function setInput(hex){
     body:JSON.stringify({hex:hex})});
 }
 
-setInterval(fetchStatus,4000);
+setInterval(fetchStatus,10000);
 fetchStatus();
 </script></body></html>
 )HTML";
 
 // ── Web-Handler ─────────────────────────────────────────────────────
 void handleRoot() {
+  webServer.sendHeader("Connection", "close");
   webServer.send_P(200, "text/html", apMode ? AP_HTML : CTRL_HTML);
 }
 
 void handleWifiPage() {
+  webServer.sendHeader("Connection", "close");
   webServer.send_P(200, "text/html", AP_HTML);
 }
 
@@ -469,8 +478,14 @@ void handleConnect() {
   }
 }
 
+void sendJson(int code, const String& body) {
+  webServer.sendHeader("Connection", "close");
+  webServer.sendHeader("Access-Control-Allow-Origin", "*");
+  webServer.send(code, "application/json", body);
+}
+
 void handleStatus() {
-  webServer.send(200, "application/json",
+  sendJson(200,
     "{\"power\":\"" + currentPower + "\","
     "\"volume\":"   + String(currentVol) + ","
     "\"input\":\""  + currentInput + "\","
@@ -478,100 +493,161 @@ void handleStatus() {
 }
 
 void handleInput() {
-  if (!webServer.hasArg("plain")) { webServer.send(400); return; }
+  if (!webServer.hasArg("plain")) { sendJson(400, "{}"); return; }
   String body = webServer.arg("plain");
   int pos = body.indexOf("\"hex\":\"");
-  if (pos < 0) { webServer.send(400); return; }
+  if (pos < 0) { sendJson(400, "{}"); return; }
   String hex = body.substring(pos + 7, pos + 9);
   hex.trim();
   hex.toUpperCase();
   char cmd[20];
   snprintf(cmd, sizeof(cmd), "!1SLI%s\r", hex.c_str());
   sendIscp(String(cmd));
+  lastPollMs = millis();
   currentInput = hex;
-  webServer.send(200, "application/json", "{\"ok\":true}");
+  sendJson(200, "{\"ok\":true}");
 }
 
 void handlePower() {
-  if (!webServer.hasArg("plain")) { webServer.send(400); return; }
-  bool on = webServer.arg("plain").indexOf("\"on\":true") >= 0;
-  queueCmd(on ? "!1PWR01\r" : "!1PWR00\r");
+  if (!webServer.hasArg("plain")) {
+    Serial.println("[PWR] kein Body!");
+    sendJson(400, "{}"); return;
+  }
+  String body = webServer.arg("plain");
+  bool on = body.indexOf("\"on\":true") >= 0;
+  Serial.println("[PWR] Body=" + body + "  on=" + String(on ? "ON" : "OFF"));
+  // Doppelsend mit 300ms Pause: erster Versuch kann im AVR-Noise verschwinden,
+  // zweiter Versuch trifft den sauberen Buffer — identischer Effekt wie "Volume vorher senden".
+  String pwrCmd = on ? "!1PWR01\r" : "!1PWR00\r";
+  sendIscp(pwrCmd);
+  delay(300);
+  sendIscp(pwrCmd);
+  lastPollMs = millis();
   currentPower = on ? "ON" : "OFF";
-  webServer.send(200, "application/json",
-    "{\"ok\":true,\"power\":\"" + currentPower + "\"}");
+  sendJson(200, "{\"ok\":true,\"power\":\"" + currentPower + "\"}");
 }
 
 void handleVolume() {
-  if (!webServer.hasArg("plain")) { webServer.send(400); return; }
+  if (!webServer.hasArg("plain")) { sendJson(400, "{}"); return; }
   String body = webServer.arg("plain");
   int pos = body.indexOf("\"vol\":");
-  if (pos < 0) { webServer.send(400); return; }
+  if (pos < 0) { sendJson(400, "{}"); return; }
   int vol = constrain(body.substring(pos + 6).toInt(), 0, VOL_MAX_HEX);
   char cmd[20];
   snprintf(cmd, sizeof(cmd), "!1MVL%02X\r", vol);
   sendIscp(String(cmd));
+  lastPollMs = millis();
   currentVol = vol;
-  webServer.send(200, "application/json", "{\"ok\":true}");
+  sendJson(200, "{\"ok\":true}");
 }
 
 // ── eISCP Bridge (OpenHAB → RS232, nur senden) ─────────────────────
 // RS232 → OpenHAB läuft über readSerial2() im Loop
+unsigned long eiscpLastRxMs = 0;
+#define EISCP_IDLE_TIMEOUT 300000   // 5 Minuten
+
+void enableKeepalive(WiFiClient& client) {
+  int fd = client.fd();
+  if (fd < 0) return;
+  int ka = 1, idle = 10, intvl = 5, cnt = 3;
+  setsockopt(fd, SOL_SOCKET,  SO_KEEPALIVE,  &ka,    sizeof(ka));
+  setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,  &idle,  sizeof(idle));
+  setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
+  setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,   &cnt,   sizeof(cnt));
+}
+
+// Aktuellen Cache-Status sofort an eISCP-Client schicken (damit OpenHAB ONLINE bleibt)
+void sendCachedStatus() {
+  if (!eiscpClient || !eiscpClient.connected()) return;
+  // IMMER einen Power-Status senden — bei UNKNOWN nehmen wir OFF an (AVR startet in Standby).
+  // Ohne Status bekommt OpenHAB keine Antwort → reconnect-Loop.
+  sendEiscpToClient(eiscpClient, currentPower == "ON" ? "!1PWR01\r" : "!1PWR00\r");
+  char volMsg[16];
+  snprintf(volMsg, sizeof(volMsg), "!1MVL%02X\r", currentVol);
+  sendEiscpToClient(eiscpClient, String(volMsg));
+  sendEiscpToClient(eiscpClient, "!1SLI" + currentInput + "\r");
+}
+
 void handleEiscpBridge() {
+  // IMMER auf neue Verbindungen prüfen — auch wenn eine bestehende existiert.
+  // Verhindert "Connect timed out": wenn OpenHAB reconnectet, bevor der ESP32
+  // die tote Verbindung erkennt, würde der Backlog volllaufen.
+  if (eiscpServer.hasClient()) {
+    WiFiClient newClient = eiscpServer.accept();
+    if (newClient) {
+      if (eiscpClient && eiscpClient.connected()) {
+        Serial.println("[eISCP] Neue Verbindung verdrängt alte");
+        eiscpClient.stop();
+      }
+      eiscpClient   = newClient;
+      eiscpLastRxMs = millis();
+      enableKeepalive(eiscpClient);
+      Serial.println("[eISCP] Client: " + eiscpClient.remoteIP().toString());
+      // Sofort gecachten Status senden → OpenHAB geht auf ONLINE
+      // KEINE QSTN-Queries hier — der AVR-Flood war die Ursache des Reconnect-Loops
+      sendCachedStatus();
+    }
+  }
+
   if (!eiscpClient || !eiscpClient.connected()) {
     eiscpClient.stop();
-    WiFiClient c = eiscpServer.accept();
-    if (c) {
-      eiscpClient = c;
-      Serial.println("[eISCP] Client: " + eiscpClient.remoteIP().toString());
-    }
     return;
   }
-  // OpenHAB → AVR
-  if (eiscpClient.available() >= 16) {
-    uint8_t buf[512];
-    int len = eiscpClient.read(buf, sizeof(buf));
-    if (len > 0) {
-      String iscp = parseEiscp(buf, len);
-      if (iscp.length() >= 3) {
-        iscp.replace("\r", "");
-        iscp.replace("\n", "");
-        Serial.println("[eISCP→RS232] " + iscp);
-        sendIscp(iscp + "\r");
+
+  // Idle-Timeout: tote Verbindung erzwungen schliessen
+  if (millis() - eiscpLastRxMs > EISCP_IDLE_TIMEOUT) {
+    Serial.println("[eISCP] Idle-Timeout (5 min), Verbindung wird geschlossen");
+    eiscpClient.stop();
+    return;
+  }
+
+  // OpenHAB → AVR / Cache
+  if (eiscpClient.available() > 0) {
+    eiscpLastRxMs = millis();
+    if (eiscpClient.available() >= 16) {
+      uint8_t buf[512];
+      int len = eiscpClient.read(buf, sizeof(buf));
+      if (len > 0) {
+        String iscp = parseEiscp(buf, len);
+        if (iscp.length() >= 3) {
+          Serial.println("[eISCP→RS232] " + iscp);
+          // QSTN-Queries direkt aus dem Cache beantworten — NICHT an den AVR weiterleiten.
+          // Verhindert den Reconnect-Loop: fragmentierte AVR-Antworten → OpenHAB timeout → reconnect → flood
+          if (iscp == "!1PWRQSTN") {
+            // Bei UNKNOWN OFF annehmen — AVR startet immer in Standby.
+            // IMMER antworten, sonst reconnect-loop.
+            sendEiscpToClient(eiscpClient, currentPower == "ON" ? "!1PWR01\r" : "!1PWR00\r");
+          } else if (iscp == "!1MVLQSTN") {
+            char m[16]; snprintf(m, sizeof(m), "!1MVL%02X\r", currentVol);
+            sendEiscpToClient(eiscpClient, String(m));
+          } else if (iscp == "!1SLIQSTN") {
+            sendEiscpToClient(eiscpClient, "!1SLI" + currentInput + "\r");
+          } else {
+            // Alles andere (Kommandos: PWR01, PWRSTANDBY, MVLxx, SLIxx …) → AVR
+            sendIscp(iscp + "\r");
+          }
+        }
       }
     }
   }
 }
 
-// ── Nicht-blockierende Command-Queue ───────────────────────────────
-void queueCmd(const String& cmd) {
-  pendingCmd      = cmd;
-  pendingCmdCount = 0;
-  pendingCmdTime  = 0; // sofort senden
-}
-
-void processCmdQueue() {
-  if (pendingCmd.length() == 0) return;
-  if (pendingCmdCount >= CMD_REPEAT) { pendingCmd = ""; return; }
-  if (millis() - pendingCmdTime >= CMD_INTERVAL) {
-    sendIscp(pendingCmd);
-    pendingCmdCount++;
-    pendingCmdTime = millis();
-  }
-}
-
 // ── Hintergrund-Poll (nur senden, readSerial2 liest die Antworten) ──
-unsigned long lastPollMs = 0;
-#define POLL_INTERVAL_MS 30000
+// Eine Query pro Intervall, rotierend — verhindert dass 3 gleichzeitige Queries
+// die AVR-Antwort auf ein User-Kommando unterbrechen.
+#define POLL_INTERVAL_MS 10000  // 10s pro Query → voller Zyklus alle 30s
 
 void pollAvr() {
   if (apMode) return;
   unsigned long now = millis();
   if (now - lastPollMs < POLL_INTERVAL_MS) return;
   lastPollMs = now;
-  // Kein delay() — Antworten kommen asynchron via readSerial2()
-  sendIscp("!1PWRQSTN\r");
-  sendIscp("!1MVLQSTN\r");
-  sendIscp("!1SLIQSTN\r");
+  switch (pollState) {
+    case 0: sendIscp("!1PWRQSTN\r"); break;
+    case 1: sendIscp("!1MVLQSTN\r"); break;
+    case 2: sendIscp("!1SLIQSTN\r"); break;
+  }
+  pollState = (pollState + 1) % 3;
 }
 
 // ── Setup ───────────────────────────────────────────────────────────
@@ -589,6 +665,17 @@ void setup() {
 
   if (ssid.length() > 0 && connectWiFi(ssid, pass)) {
     apMode = false;
+
+    // Startup-Poll: AVR-Status abfragen und 2s auf Antwort warten.
+    // Cache muss gefüllt sein bevor OpenHAB sich verbindet, sonst Reconnect-Loop.
+    Serial.println("Startup: AVR-Status abfragen...");
+    sendIscp("!1PWRQSTN\r");
+    sendIscp("!1MVLQSTN\r");
+    sendIscp("!1SLIQSTN\r");
+    for (int i = 0; i < 100; i++) { readSerial2(); delay(20); }
+    Serial.println("Cache nach Startup: PWR=" + currentPower +
+                   " VOL=" + String(currentVol) + " SLI=" + currentInput);
+
     MDNS.begin("onkyo-bridge");
     Serial.println("mDNS: http://onkyo-bridge.local");
     eiscpServer.begin();
@@ -614,7 +701,6 @@ void loop() {
   webServer.handleClient();
   if (!apMode) {
     readSerial2();
-    processCmdQueue();
     handleEiscpBridge();
     pollAvr();
   }
