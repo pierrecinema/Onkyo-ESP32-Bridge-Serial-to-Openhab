@@ -1,0 +1,12 @@
+// Onkyo TX-SR 806 — OpenHAB Items
+
+// ── Zone 1 ──────────────────────────────────────────────────────────
+Switch   Onkyo_Power   "Onkyo Power"       <switch>       { channel="onkyo:onkyoAVR:avr:zone1#power" }
+Dimmer   Onkyo_Volume  "Lautstärke [%d %%]"  <soundvolume>  { channel="onkyo:onkyoAVR:avr:zone1#volume" }
+Switch   Onkyo_Mute    "Stummschalten"     <soundvolume_mute> { channel="onkyo:onkyoAVR:avr:zone1#mute" }
+Number   Onkyo_Input   "Eingang [%d]"      <receiver>     { channel="onkyo:onkyoAVR:avr:zone1#input" }
+
+// ── Player Info (optional) ──────────────────────────────────────────
+String   Onkyo_Title   "Titel [%s]"        <music>        { channel="onkyo:onkyoAVR:avr:player#title" }
+String   Onkyo_Artist  "Künstler [%s]"     <music>        { channel="onkyo:onkyoAVR:avr:player#artist" }
+String   Onkyo_Album   "Album [%s]"        <music>        { channel="onkyo:onkyoAVR:avr:player#album" }

@@ -1,0 +1,18 @@
+// Onkyo TX-SR 806 — OpenHAB Things Konfiguration
+// Das ESP32-Bridge erscheint für OpenHAB als normaler Netzwerk-AVR
+//
+// ipAddress = IP des ESP32 (nach WiFi-Setup im Bridge-WebGUI ablesen)
+// Alternativ: onkyo-bridge.local wenn mDNS verfügbar ist
+//
+// Channels Übersicht:
+//   zone1#power   → Power On/Off
+//   zone1#volume  → Lautstärke (Dimmer 0–100%)
+//   zone1#mute    → Stummschalten
+//   zone1#input   → Eingangsquelle (Zahl)
+
+Thing onkyo:onkyoAVR:avr "Onkyo TX-SR 806" [
+    ipAddress       = "192.168.1.XXX",
+    port            = 60128,
+    refreshInterval = 60,
+    volumeLimit     = 80
+]
