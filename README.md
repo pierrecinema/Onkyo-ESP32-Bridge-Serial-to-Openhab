@@ -1,3 +1,5 @@
+3D Case comming soon!!!!
+
 # Onkyo TX-SR 806 — ESP32 RS232 Bridge
 
 ESP32-basierte RS232-Bridge für den Onkyo TX-SR 806 AV-Receiver. Verbindet einen AVR ohne Netzwerkanschluss über RS232 mit dem Heimnetzwerk — steuerbar per WebGUI und OpenHAB.
