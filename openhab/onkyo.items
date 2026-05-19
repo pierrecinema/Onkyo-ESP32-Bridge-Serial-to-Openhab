@@ -1,12 +1,48 @@
-// Onkyo TX-SR 806 — OpenHAB Items
+// Onkyo TX-SR 806 — OpenHAB Items (MQTT Bridge via ESP32)
+//
+// Google Assistant Integration:
+//   - Gruppe gOnkyo erscheint als TV-Gerät in Google Home
+//   - availableInputs MUSS auf der GRUPPE stehen (nicht auf tvInput-Item!)
+//   - Format: key=Name:Synonym  (key = der tatsächliche MQTT-State-Wert)
+//   - Beispiel: "10=DVD:Chromecast" → State "10" = Eingang DVD/Chromecast
 
-// ── Zone 1 ──────────────────────────────────────────────────────────
-Switch   Onkyo_Power   "Onkyo Power"       <switch>       { channel="onkyo:onkyoAVR:avr:zone1#power" }
-Dimmer   Onkyo_Volume  "Lautstärke [%d %%]"  <soundvolume>  { channel="onkyo:onkyoAVR:avr:zone1#volume" }
-Switch   Onkyo_Mute    "Stummschalten"     <soundvolume_mute> { channel="onkyo:onkyoAVR:avr:zone1#mute" }
-Number   Onkyo_Input   "Eingang [%d]"      <receiver>     { channel="onkyo:onkyoAVR:avr:zone1#input" }
+// ── Gruppe (Google Home TV-Gerät) ────────────────────────────────────
+Group gOnkyo "Onkyo TX-SR 806" <receiver> {
+    ga="TV" [
+        availableInputs="00=VCR:DVR,01=CBL:SAT,02=Game:Gaming,03=AUX,10=DVD:Chromecast,20=Tape,22=Phono:Vinyl,23=CD,24=FM:Radio,25=AM"
+    ]
+}
 
-// ── Player Info (optional) ──────────────────────────────────────────
-String   Onkyo_Title   "Titel [%s]"        <music>        { channel="onkyo:onkyoAVR:avr:player#title" }
-String   Onkyo_Artist  "Künstler [%s]"     <music>        { channel="onkyo:onkyoAVR:avr:player#artist" }
-String   Onkyo_Album   "Album [%s]"        <music>        { channel="onkyo:onkyoAVR:avr:player#album" }
+// ── MQTT-verknüpfte Items ────────────────────────────────────────────
+Switch Onkyo_Power  "Onkyo Power"       <switch>          (gOnkyo) { channel="mqtt:topic:onkyo-broker:onkyo-bridge:power",  ga="tvPower" }
+Dimmer Onkyo_Volume "Onkyo Lautstärke"  <soundvolume>     (gOnkyo) { channel="mqtt:topic:onkyo-broker:onkyo-bridge:volume", ga="tvVolume" [volumeMaxLevel=100] }
+Switch Onkyo_Mute   "Onkyo Mute"        <soundvolume_mute>(gOnkyo) { channel="mqtt:topic:onkyo-broker:onkyo-bridge:mute",   ga="tvMute" }
+
+// Input-Item: State = Hex-Code (z.B. "10" für DVD)
+// Hex-Codes: 00=VCR, 01=CBL, 02=Game, 03=AUX, 10=DVD,
+//            20=Tape, 22=Phono, 23=CD, 24=FM, 25=AM
+String Onkyo_Input  "Onkyo Input"       <receiver>        (gOnkyo) { channel="mqtt:topic:onkyo-broker:onkyo-bridge:input",  ga="tvInput" }
+
+// ── Virtuelle Input-Schalter (optional, für OpenHAB-UI) ──────────────
+// Werden durch Rule "Onkyo Input State Sync" aktualisiert
+// Können über Gruppe gOnkyoInputs per Rule gesteuert werden
+Group  gOnkyoInputs "Onkyo Eingänge"
+
+Switch Onkyo_Input_Video1   "VCR/DVR"    <receiver> (gOnkyoInputs)
+Switch Onkyo_Input_CblSat   "CBL/SAT"   <receiver> (gOnkyoInputs)
+Switch Onkyo_Input_Game     "Game"       <receiver> (gOnkyoInputs)
+Switch Onkyo_Input_Aux      "AUX"        <receiver> (gOnkyoInputs)
+Switch Onkyo_Input_BdDvd    "DVD"        <receiver> (gOnkyoInputs)
+Switch Onkyo_Input_Tape     "Tape"       <receiver> (gOnkyoInputs)
+Switch Onkyo_Input_Phono    "Phono"      <receiver> (gOnkyoInputs)
+Switch Onkyo_Input_CD       "CD"         <receiver> (gOnkyoInputs)
+Switch Onkyo_Input_TunerFM  "Tuner FM"   <receiver> (gOnkyoInputs)
+Switch Onkyo_Input_TunerAM  "Tuner AM"   <receiver> (gOnkyoInputs)
+
+// Eingangsname als String (für OpenHAB-UI Dropdown / Widget Page)
+String Onkyo_InputName "Onkyo Eingang" <receiver> (gOnkyo) {
+    stateDescription="" [
+        options="vcr=VCR/DVR,cbl=CBL/SAT,game=Game,aux=AUX,dvd=DVD,tape=Tape,phono=Phono,cd=CD,fm=Tuner FM,am=Tuner AM",
+        readOnly=false
+    ]
+}
