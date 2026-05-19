@@ -6,7 +6,11 @@ ESP32-basierte RS232-Bridge für den Onkyo TX-SR 806 AV-Receiver. Verbindet eine
 
 ---
 
-## Features
+## Features<img width="3060" height="4080" alt="20260519_064520" src="https://github.com/user-attachments/assets/2d64bb8a-702a-402d-a2c0-3bd5ec5df25f" />
+<img width="3060" height="4080" alt="20260519_063956" src="https://github.com/user-attachments/assets/d906dfc6-fb6c-490d-a6ac-3905c80bc6ee" />
+<img width="3060" height="4080" alt="20260519_064000" src="https://github.com/user-attachments/assets/b11c71ce-19c5-4dd8-8803-70c81e95d930" />
+<img width="3060" height="4080" alt="20260519_064515" src="https://github.com/user-attachments/assets/64b0d52b-63f2-409a-bac0-fad5ea1644e5" />
+
 
 - **WebGUI** (kein Login, kein Passwort)
   - Power ON / OFF
@@ -19,6 +23,9 @@ ESP32-basierte RS232-Bridge für den Onkyo TX-SR 806 AV-Receiver. Verbindet eine
   - Kompatibel mit dem offiziellen [Onkyo Binding](https://www.openhab.org/addons/bindings/onkyo/)
 - **mDNS**: erreichbar unter `http://onkyo-bridge.local`
 - Keine externen Libraries nötig
+
+---
+
 
 ---
 
