@@ -1,0 +1,86 @@
+// Onkyo TX-SR 806 — OpenHAB Rules
+
+// Hex-Code → Eingangsname (Kleinbuchstaben)
+val java.util.Map<String,String> HEX_TO_NAME = newHashMap(
+    "00" -> "vcr",
+    "01" -> "cbl",
+    "02" -> "game",
+    "03" -> "aux",
+    "10" -> "dvd",
+    "20" -> "tape",
+    "22" -> "phono",
+    "23" -> "cd",
+    "24" -> "fm",
+    "25" -> "am"
+)
+
+// Eingangsname → Hex-Code (Kleinbuchstaben)
+val java.util.Map<String,String> NAME_TO_HEX = newHashMap(
+    "vcr"   -> "00",
+    "cbl"   -> "01",
+    "game"  -> "02",
+    "aux"   -> "03",
+    "dvd"   -> "10",
+    "tape"  -> "20",
+    "phono" -> "22",
+    "cd"    -> "23",
+    "fm"    -> "24",
+    "am"    -> "25"
+)
+
+// State-Sync: wenn Onkyo_Input (Hex-Code) sich ändert →
+//   alle virtuellen Input-Schalter und Onkyo_InputName aktualisieren
+rule "Onkyo Input State Sync"
+when
+    Item Onkyo_Input changed
+then
+    val String input = Onkyo_Input.state.toString
+    Onkyo_Input_Video1.postUpdate(  if (input == "00") ON else OFF )
+    Onkyo_Input_CblSat.postUpdate(  if (input == "01") ON else OFF )
+    Onkyo_Input_Game.postUpdate(    if (input == "02") ON else OFF )
+    Onkyo_Input_Aux.postUpdate(     if (input == "03") ON else OFF )
+    Onkyo_Input_BdDvd.postUpdate(   if (input == "10") ON else OFF )
+    Onkyo_Input_Tape.postUpdate(    if (input == "20") ON else OFF )
+    Onkyo_Input_Phono.postUpdate(   if (input == "22") ON else OFF )
+    Onkyo_Input_CD.postUpdate(      if (input == "23") ON else OFF )
+    Onkyo_Input_TunerFM.postUpdate( if (input == "24") ON else OFF )
+    Onkyo_Input_TunerAM.postUpdate( if (input == "25") ON else OFF )
+    val String name = HEX_TO_NAME.get(input)
+    if (name !== null) Onkyo_InputName.postUpdate(name)
+end
+
+// Command: Virtueller Input-Schalter ON → Hex-Code an ESP32 senden
+rule "Onkyo Input Switch Command"
+when
+    Member of gOnkyoInputs received command ON
+then
+    val String itemName = triggeringItem.name
+    var String hex = ""
+    switch itemName {
+        case "Onkyo_Input_Video1"  : hex = "00"
+        case "Onkyo_Input_CblSat"  : hex = "01"
+        case "Onkyo_Input_Game"    : hex = "02"
+        case "Onkyo_Input_Aux"     : hex = "03"
+        case "Onkyo_Input_BdDvd"   : hex = "10"
+        case "Onkyo_Input_Tape"    : hex = "20"
+        case "Onkyo_Input_Phono"   : hex = "22"
+        case "Onkyo_Input_CD"      : hex = "23"
+        case "Onkyo_Input_TunerFM" : hex = "24"
+        case "Onkyo_Input_TunerAM" : hex = "25"
+    }
+    if (hex != "") {
+        Onkyo_Input.sendCommand(hex)
+    }
+end
+
+// Command: Onkyo_InputName (Dropdown/Widget) → Hex-Code an ESP32 senden
+rule "Onkyo Input Name Command"
+when
+    Item Onkyo_InputName received command
+then
+    val String name = receivedCommand.toString.toLowerCase
+    val String hex = NAME_TO_HEX.get(name)
+    if (hex !== null) {
+        Onkyo_Input.sendCommand(hex)
+    }
+end
