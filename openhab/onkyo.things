@@ -1,18 +1,31 @@
-// Onkyo TX-SR 806 — OpenHAB Things Konfiguration
-// Das ESP32-Bridge erscheint für OpenHAB als normaler Netzwerk-AVR
+// Onkyo TX-SR 806 — OpenHAB Things (MQTT via ESP32 Bridge)
 //
-// ipAddress = IP des ESP32 (nach WiFi-Setup im Bridge-WebGUI ablesen)
-// Alternativ: onkyo-bridge.local wenn mDNS verfügbar ist
-//
-// Channels Übersicht:
-//   zone1#power   → Power On/Off
-//   zone1#volume  → Lautstärke (Dimmer 0–100%)
-//   zone1#mute    → Stummschalten
-//   zone1#input   → Eingangsquelle (Zahl)
+// Voraussetzung: MQTT Broker Binding installiert
+// Der ESP32 kommuniziert via seriell (RS-232) mit dem Onkyo
+// und publiziert den State via MQTT.
 
-Thing onkyo:onkyoAVR:avr "Onkyo TX-SR 806" [
-    ipAddress       = "192.168.1.XXX",
-    port            = 60128,
-    refreshInterval = 60,
-    volumeLimit     = 80
-]
+Bridge mqtt:broker:onkyo-broker "Onkyo MQTT Broker" [
+    host="192.168.1.XXX",
+    port=1883,
+    secure=false,
+    clientid="openhab-onkyo",
+    keepAlive=30
+] {
+    Thing topic onkyo-bridge "Onkyo TX-SR 806" {
+        Channels:
+            Type switch : power  "Power"  [ stateTopic="onkyo/power",  commandTopic="onkyo/power/set",  on="ON",  off="OFF" ]
+            Type dimmer : volume "Volume" [ stateTopic="onkyo/volume", commandTopic="onkyo/volume/set", min=0, max=80, step=1 ]
+            Type string : input  "Input"  [ stateTopic="onkyo/input",  commandTopic="onkyo/input/set"  ]
+            Type switch : mute   "Mute"   [ stateTopic="onkyo/mute",   commandTopic="onkyo/mute/set",   on="ON",  off="OFF" ]
+    }
+}
+
+// MQTT Topics:
+//   onkyo/power        → "ON" / "OFF"
+//   onkyo/power/set    ← "ON" / "OFF"
+//   onkyo/volume       → 0–80 (wird von OpenHAB auf 0–100% skaliert)
+//   onkyo/volume/set   ← 0–80
+//   onkyo/input        → Hex-Code als String (z.B. "10" für DVD)
+//   onkyo/input/set    ← Hex-Code als String
+//   onkyo/mute         → "ON" / "OFF"
+//   onkyo/mute/set     ← "ON" / "OFF"
